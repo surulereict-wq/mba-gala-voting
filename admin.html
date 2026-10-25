@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="theme-color" content="#080b09">
+  <title>Awards Night — Organiser</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@500;600;700&family=Jost:wght@300;400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<main class="wrap wide">
+  <p class="eyebrow">Awards Night · Organiser</p>
+  <h1>Voting control</h1>
+
+  <section id="login" class="card" style="max-width:440px;margin:24px auto">
+    <form id="login-form">
+      <label class="field-label" for="key">Organiser key</label>
+      <input id="key" type="password" autocomplete="off" placeholder="Enter the voting admin key">
+      <div id="login-error" class="notice error" role="alert" hidden></div>
+      <button class="btn" type="submit" style="margin-top:14px">Sign in</button>
+    </form>
+  </section>
+
+  <div id="panel" hidden>
+    <p class="fine" style="text-align:right;margin:0 0 12px"><button id="signout" class="link" type="button">Sign out</button></p>
+
+    <!-- status & controls -->
+    <section class="card">
+      <div class="row" style="justify-content:space-between">
+        <h2 style="margin:0">Voting <span id="badge" class="badge"></span></h2>
+        <span class="fine" style="margin:0">Pages: <a class="link" href="index.html" target="_blank" rel="noopener">voter page</a> · <a class="link" href="results.html" target="_blank" rel="noopener">big screen</a></span>
+      </div>
+      <div class="stats">
+        <div class="stat"><b id="n-roster">0</b><span>On the voter list</span></div>
+        <div class="stat"><b id="n-ballots">0</b><span>Ballots cast</span></div>
+        <div class="stat"><b id="n-pct">0%</b><span>Turnout</span></div>
+      </div>
+      <div id="status-msg" class="notice" hidden></div>
+      <div class="row" id="controls"></div>
+      <label class="check" style="margin-top:16px"><input id="tallies" type="checkbox"> Show vote percentages on the big screen (otherwise just the winner)</label>
+    </section>
+
+    <!-- setup -->
+    <div class="grid2">
+      <section class="card">
+        <h2>Categories &amp; nominees</h2>
+        <p class="fine" style="margin-top:0">One <b>#</b> line per category, then one nominee per line. Each category needs at least 2 nominees.</p>
+        <textarea id="structure" spellcheck="false" placeholder="# Best Dressed&#10;Ada Obi&#10;Tunde Ade&#10;&#10;# Life of the Party&#10;Chi Eze&#10;Dayo Bello"></textarea>
+        <div id="structure-msg" class="notice" hidden></div>
+        <button id="save-structure" class="btn" type="button" style="margin-top:12px">Save categories</button>
+      </section>
+      <section class="card">
+        <h2>Voter list</h2>
+        <p class="fine" style="margin-top:0">One voter per line: <b>matric number, full name</b>. You can paste straight from Excel. Pasting again adds new voters and updates names.</p>
+        <textarea id="roster" spellcheck="false" placeholder="190805001, Chidi Okafor&#10;190805002, Ada Eze"></textarea>
+        <div id="roster-msg" class="notice" hidden></div>
+        <button id="save-roster" class="btn" type="button" style="margin-top:12px">Add voters</button>
+      </section>
+    </div>
+
+    <!-- live results & reveal -->
+    <section class="card" style="margin-top:16px">
+      <h2>Live results &amp; reveal</h2>
+      <p id="reveal-note" class="fine" style="margin-top:0">Only you can see these numbers. Winners appear on the big screen only when you reveal them.</p>
+      <div id="results"></div>
+    </section>
+
+    <section class="card">
+      <details>
+        <summary id="turnout-summary">Haven't voted yet</summary>
+        <ul id="not-voted" class="names"></ul>
+      </details>
+    </section>
+  </div>
+
+  <p class="foot">CONNECT &nbsp;|&nbsp; GROW &nbsp;|&nbsp; EXCEL</p>
+</main>
+
+<script src="config.js"></script>
+<script src="assets/api.js"></script>
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var STORE = "voting-admin-key";
+  var key = sessionStorage.getItem(STORE) || "";
+  var overview = null;
+  var structureDirty = false;
+  var timer = null;
+
+  function flash(el, text, kind) {
+    el.textContent = text || "";
+    el.className = "notice" + (kind ? " " + kind : "");
+    el.hidden = !text;
+  }
+
+  // Every admin call carries the key; a rejected key sends you back to sign-in.
+  function call(path, opts) {
+    opts = opts || {};
+    opts.adminKey = key;
+    return api("/admin" + path, opts).then(function (r) {
+      if (r.status === 401 || r.status === 503) signOut(r.data.error);
+      return r;
+    });
+  }
+
+  function signOut(message) {
+    key = "";
+    sessionStorage.removeItem(STORE);
+    clearInterval(timer);
+    $("panel").hidden = true;
+    $("login").hidden = false;
+    flash($("login-error"), message || "", "error");
+  }
+
+  // ---- load & render ----
+  function refresh() {
+    return Promise.all([call("/overview"), call("/results"), call("/turnout")]).then(function (rs) {
+      if (!rs.every(function (r) { return r.ok; })) {
+        var bad = rs.filter(function (r) { return !r.ok; })[0];
+        if (bad && bad.status !== 401 && bad.status !== 503) flash($("login-error"), bad.data.error || "Couldn't load. Try again.", "error");
+        return false;
+      }
+      overview = rs[0].data;
+      $("login").hidden = true;
+      $("panel").hidden = false;
+      renderStatus(rs[0].data);
+      renderStructure(rs[0].data);
+      renderResults(rs[1].data, rs[0].data);
+      renderTurnout(rs[2].data);
+      return true;
+    });
+  }
+
+  function renderStatus(o) {
+    var badge = $("badge");
+    badge.textContent = o.status;
+    badge.className = "badge " + o.status;
+    $("n-roster").textContent = o.roster_total;
+    $("n-ballots").textContent = o.ballots_total;
+    $("n-pct").textContent = (o.roster_total ? Math.round((o.ballots_total / o.roster_total) * 100) : 0) + "%";
+    $("tallies").checked = !!o.show_tallies;
+
+    var c = $("controls");
+    c.textContent = "";
+    if (o.status === "draft") {
+      c.appendChild(h("button", { class: "btn small", id: "btn-open", type: "button", onclick: function () { setStatus("open"); } }, "Open voting"));
+    } else if (o.status === "open") {
+      c.appendChild(h("button", { class: "btn small danger", id: "btn-close", type: "button", onclick: function () { setStatus("closed"); } }, "Close voting"));
+    } else {
+      c.appendChild(h("button", { class: "btn small ghost", id: "btn-reopen", type: "button", onclick: function () { setStatus("open"); } }, "Reopen voting"));
+    }
+    if (o.status !== "draft" && o.ballots_total === 0) {
+      c.appendChild(h("button", { class: "btn small ghost", id: "btn-draft", type: "button", onclick: function () { setStatus("draft"); } }, "Back to draft"));
+    }
+  }
+
+  function categoriesToText(cats) {
+    return cats.map(function (c) { return "# " + c.name + "\n" + c.nominees.join("\n"); }).join("\n\n");
+  }
+  function renderStructure(o) {
+    var locked = o.status !== "draft" || o.ballots_total > 0;
+    $("structure").disabled = locked;
+    $("save-structure").disabled = locked;
+    if (locked) flash($("structure-msg"), "Categories are locked once voting has opened, so results can't be changed after the fact.", "");
+    if (!structureDirty || locked) $("structure").value = categoriesToText(o.categories);
+  }
+
+  function renderResults(data, o) {
+    var box = $("results");
+    box.textContent = "";
+    var closed = o.status === "closed";
+    $("reveal-note").textContent = closed
+      ? "Voting is closed. Reveal a category when you're ready: it appears on the big screen straight away."
+      : "Only you can see these numbers. Winners can be revealed on the big screen once voting is closed.";
+    if (!data.categories.length) box.appendChild(h("p", { class: "dim" }, "No categories yet."));
+    data.categories.forEach(function (cat) {
+      var block = h("div", { class: "cat-block" },
+        h("div", { class: "cat-head" },
+          h("h3", { style: "margin:0" }, cat.name, cat.revealed ? h("span", { class: "badge open", style: "margin-left:10px" }, "on screen") : null),
+          h("button", {
+            class: "btn small " + (cat.revealed ? "ghost" : ""), type: "button", "data-reveal": cat.id, disabled: !closed,
+            onclick: function () { reveal(cat.id, !cat.revealed); },
+          }, cat.revealed ? "Hide again" : "Reveal on screen")));
+      cat.nominees.forEach(function (n) {
+        block.appendChild(h("div", null,
+          h("div", { class: "trow" }, h("span", null, n.name), h("span", { class: "dim" }, n.votes + " · " + n.percent + "%")),
+          h("div", { class: "bar" }, h("i", { style: "width:" + Math.max(0, Math.min(100, n.percent)) + "%" }))));
+      });
+      block.appendChild(h("p", { class: "fine" }, cat.total_votes + " votes · " + cat.skipped + " skipped"));
+      box.appendChild(block);
+    });
+  }
+
+  function renderTurnout(t) {
+    $("turnout-summary").textContent = "Haven't voted yet (" + t.not_voted.length + " of " + t.roster_total + ")";
+    var ul = $("not-voted");
+    ul.textContent = "";
+    t.not_voted.forEach(function (v) { ul.appendChild(h("li", null, v.full_name + " (" + v.matric_number + ")")); });
+  }
+
+  // ---- actions ----
+  function setStatus(next) {
+    var warning = {
+      open: "Open voting now? Voters will be able to vote straight away, and categories will be locked.",
+      closed: "Close voting? Nobody will be able to vote after this.",
+      draft: "Go back to draft?",
+    }[next];
+    if (!window.confirm(warning)) return;
+    call("/status", { method: "POST", body: { status: next } }).then(function (r) {
+      flash($("status-msg"), r.ok ? "" : r.data.error || "That didn't work.", r.ok ? "" : "error");
+      if (r.ok) refresh();
+    });
+  }
+
+  function reveal(id, revealed) {
+    call("/reveal", { method: "POST", body: { category_id: id, revealed: revealed } }).then(function (r) {
+      flash($("status-msg"), r.ok ? "" : r.data.error || "That didn't work.", r.ok ? "" : "error");
+      if (r.ok) refresh();
+    });
+  }
+
+  $("tallies").addEventListener("change", function () {
+    call("/settings", { method: "POST", body: { show_tallies: $("tallies").checked } }).then(function (r) {
+      if (!r.ok) flash($("status-msg"), r.data.error || "That didn't work.", "error");
+    });
+  });
+
+  // "# Category" lines, then one nominee per line.
+  function parseStructure(text) {
+    var cats = [], current = null;
+    var lines = text.split(/\r?\n/);
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i].trim();
+      if (!line) continue;
+      if (line.charAt(0) === "#") {
+        current = { name: line.replace(/^#+\s*/, "").trim(), nominees: [] };
+        cats.push(current);
+      } else {
+        if (!current) return { error: "Start each category with a # line, e.g. “# Best Dressed”." };
+        current.nominees.push(line);
+      }
+    }
+    return { categories: cats };
+  }
+
+  $("structure").addEventListener("input", function () { structureDirty = true; });
+  $("save-structure").addEventListener("click", function () {
+    var parsed = parseStructure($("structure").value);
+    if (parsed.error) return flash($("structure-msg"), parsed.error, "error");
+    call("/structure", { method: "PUT", body: { categories: parsed.categories } }).then(function (r) {
+      if (!r.ok) return flash($("structure-msg"), r.data.error || "Couldn't save.", "error");
+      structureDirty = false;
+      flash($("structure-msg"), "Saved " + r.data.categories + " categories with " + r.data.nominees + " nominees.", "ok");
+      refresh();
+    });
+  });
+
+  $("save-roster").addEventListener("click", function () {
+    var btn = $("save-roster");
+    btn.disabled = true;
+    call("/roster", { method: "POST", body: { text: $("roster").value } }).then(function (r) {
+      btn.disabled = false;
+      var bad = (r.data.invalid || []).map(function (i) { return "line " + i.line + ": " + i.reason; });
+      if (!r.ok) return flash($("roster-msg"), (r.data.error || "Couldn't save.") + (bad.length ? " " + bad.join("; ") : ""), "error");
+      $("roster").value = "";
+      flash($("roster-msg"),
+        "Added or updated " + r.data.processed + " voters." + (bad.length ? " Skipped " + bad.length + " lines — " + bad.join("; ") : ""),
+        bad.length ? "error" : "ok");
+      refresh();
+    });
+  });
+
+  // ---- sign in / out ----
+  $("login-form").addEventListener("submit", function (e) {
+    e.preventDefault();
+    var typed = $("key").value.trim();
+    if (!typed) return flash($("login-error"), "Enter the organiser key.", "error");
+    key = typed;
+    $("key").value = "";
+    flash($("login-error"), "");
+    refresh().then(function (ok) {
+      if (ok) {
+        sessionStorage.setItem(STORE, key);
+        timer = setInterval(function () { if (!document.hidden) refresh(); }, 20000);
+      }
+    });
+  });
+  $("signout").addEventListener("click", function () { signOut(""); });
+
+  if (key) {
+    refresh().then(function (ok) {
+      if (ok) timer = setInterval(function () { if (!document.hidden) refresh(); }, 20000);
+    });
+  }
+})();
+</script>
+</body>
+</html>

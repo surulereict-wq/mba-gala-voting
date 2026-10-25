@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <meta name="theme-color" content="#080b09">
+  <title>Awards Night — Winners</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@500;600;700&family=Jost:wght@300;400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<main class="stage">
+  <div class="crest"><img src="assets/crest.png" alt="" width="92" height="92"></div>
+  <p class="eyebrow">Awards Night</p>
+  <h1>The Executive Soirée</h1>
+
+  <p id="waiting" class="lede" aria-live="polite">Connecting…</p>
+
+  <section id="spot" class="spot" hidden aria-live="polite">
+    <p id="spot-cat" class="cat"></p>
+    <div id="spot-winner" class="winner"></div>
+    <div id="spot-tie" class="tie-tag" hidden>A tie</div>
+    <div id="spot-tallies" class="tallies" hidden></div>
+  </section>
+
+  <ul id="roll" class="roll"></ul>
+  <p class="foot">CONNECT &nbsp;|&nbsp; GROW &nbsp;|&nbsp; EXCEL</p>
+</main>
+
+<script src="config.js"></script>
+<script src="assets/api.js"></script>
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var shownId = null;       // the category currently in the spotlight
+  var POLL_MS = 5000;
+
+  function joinNames(list) { return list.join(" & "); }
+
+  function render(data) {
+    var cats = data.categories || [];
+    var revealed = cats.filter(function (c) { return c.revealed; });
+
+    // Spotlight the most recently revealed category.
+    var latest = revealed.slice().sort(function (a, b) {
+      return String(b.revealed_at || "").localeCompare(String(a.revealed_at || ""));
+    })[0];
+
+    var waiting = $("waiting");
+    if (!latest) {
+      waiting.hidden = false;
+      waiting.textContent =
+        data.status === "closed" ? "Voting has closed. The winners will be revealed shortly."
+        : data.status === "open" ? "Voting is open. Winners will be revealed here tonight."
+        : "The winners will be revealed here tonight.";
+      $("spot").hidden = true;
+      shownId = null;
+    } else {
+      waiting.hidden = true;
+      $("spot").hidden = false;
+      $("spot-cat").textContent = latest.name;
+      $("spot-winner").textContent = latest.winners.length ? joinNames(latest.winners) : "No votes were cast";
+      $("spot-tie").hidden = latest.winners.length < 2;
+
+      var tallies = $("spot-tallies");
+      tallies.textContent = "";
+      tallies.hidden = !latest.tallies;
+      (latest.tallies || []).forEach(function (t) {
+        tallies.appendChild(h("div", null,
+          h("div", { class: "trow" }, h("span", null, t.name), h("span", { class: "dim" }, t.percent + "%")),
+          h("div", { class: "bar" }, h("i", { style: "width:" + Math.max(0, Math.min(100, t.percent)) + "%" }))));
+      });
+
+      // Replay the entrance animation only when a NEW category is revealed.
+      if (shownId !== latest.id) {
+        var spot = $("spot");
+        spot.classList.remove("rise");
+        void spot.offsetWidth;
+        spot.classList.add("rise");
+        shownId = latest.id;
+      }
+    }
+
+    var roll = $("roll");
+    roll.textContent = "";
+    cats.forEach(function (c) {
+      roll.appendChild(h("li", null,
+        h("span", { class: "cat" }, c.name),
+        c.revealed
+          ? h("span", { class: "win" }, c.winners.length ? joinNames(c.winners) : "No votes cast")
+          : h("span", { class: "pending" }, "To be revealed")));
+    });
+  }
+
+  function poll() {
+    api("/results").then(function (r) {
+      if (r.ok) render(r.data);
+      else if (!shownId) $("waiting").textContent = "Reconnecting…";
+    });
+  }
+  poll();
+  setInterval(poll, POLL_MS);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <meta name="theme-color" content="#080b09">
+  <title>Awards Night — Cast Your Vote</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@500;600;700&family=Jost:wght@300;400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<main class="wrap">
+  <div class="crest"><img src="assets/crest.png" alt="" width="92" height="92"></div>
+  <p class="eyebrow">Awards Night</p>
+  <h1>The Executive Soirée</h1>
+  <p class="lede">Cast your vote</p>
+
+  <div id="slow" class="notice" role="status" hidden>
+    <span class="spin"></span>The server is waking up. This can take up to a minute, please wait…
+  </div>
+
+  <section id="v-loading" class="card center"><span class="spin"></span>Connecting…</section>
+
+  <section id="v-notice" class="card center" hidden aria-live="polite">
+    <h2 id="notice-title"></h2>
+    <p id="notice-text" class="dim"></p>
+    <a id="notice-link" class="btn ghost" href="results.html" hidden>See the results</a>
+  </section>
+
+  <section id="v-matric" class="card" hidden>
+    <form id="matric-form" novalidate>
+      <label class="field-label" for="matric">Your matric number</label>
+      <input id="matric" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="Enter your matric number">
+      <div id="matric-error" class="notice error" role="alert" hidden></div>
+      <button id="matric-btn" class="btn" type="submit" style="margin-top:14px">Continue</button>
+    </form>
+    <p class="fine">Each matric number can vote once, and votes are final.</p>
+  </section>
+
+  <section id="v-ballot" hidden>
+    <div class="card who">
+      <span>Voting as <b id="who"></b></span>
+      <button id="change" class="link" type="button">Not you?</button>
+    </div>
+    <div id="categories"></div>
+    <div id="ballot-error" class="notice error" role="alert" hidden></div>
+    <div class="sticky-bar">
+      <p id="progress" class="fine"></p>
+      <button id="review-btn" class="btn" type="button">Review my vote</button>
+    </div>
+  </section>
+
+  <section id="v-review" hidden>
+    <div class="card">
+      <h2>Check your choices</h2>
+      <ul id="review-list" class="review"></ul>
+      <p class="fine">Once you submit, your vote can't be changed.</p>
+    </div>
+    <div id="submit-error" class="notice error" role="alert" hidden></div>
+    <button id="submit-btn" class="btn" type="button">Submit my vote</button>
+    <button id="back-btn" class="btn ghost" type="button">Go back and change</button>
+  </section>
+
+  <section id="v-done" class="card center" hidden aria-live="polite">
+    <div class="tick">✓</div>
+    <h2>Your vote is in</h2>
+    <p class="dim">Thank you for voting. The winners will be revealed on the big screen tonight.</p>
+  </section>
+
+  <p class="foot">CONNECT &nbsp;|&nbsp; GROW &nbsp;|&nbsp; EXCEL</p>
+</main>
+
+<script src="config.js"></script>
+<script src="assets/api.js"></script>
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var VIEWS = ["v-loading", "v-notice", "v-matric", "v-ballot", "v-review", "v-done"];
+
+  var matric = "";
+  var categories = [];   // [{ id, name, nominees: [{ id, name }] }]
+  var choices = {};      // categoryId -> nomineeId, or "" for "skip"; undefined = not answered yet
+
+  function show(id) {
+    VIEWS.forEach(function (v) { $(v).hidden = v !== id; });
+    $("slow").hidden = true;
+    window.scrollTo(0, 0);
+  }
+  function setError(el, msg) { el.textContent = msg || ""; el.hidden = !msg; }
+  function onSlow() { $("slow").hidden = false; }
+  function notice(title, text, withResults) {
+    $("notice-title").textContent = title;
+    $("notice-text").textContent = text;
+    $("notice-link").hidden = !withResults;
+    show("v-notice");
+  }
+  function alreadyVoted() {
+    notice("You've already voted", "This matric number has already been used to vote. Each person can vote once, and votes can't be changed.");
+  }
+  // Nominees appear in a different random order for each voter, so being
+  // listed first never helps anyone.
+  function shuffle(list) {
+    var a = list.slice();
+    for (var i = a.length - 1; i > 0; i--) {
+      var j = Math.floor(Math.random() * (i + 1));
+      var t = a[i]; a[i] = a[j]; a[j] = t;
+    }
+    return a;
+  }
+
+  // ---- 1. is voting open? ----
+  function start() {
+    show("v-loading");
+    return api("/state", { onSlow: onSlow }).then(function (r) {
+      if (!r.ok) return notice("We can't connect right now", r.data.error || "Please try again in a moment.");
+      if (r.data.status === "draft") return notice("Voting opens soon", "Check back when the awards night begins.");
+      if (r.data.status === "closed") return notice("Voting has closed", "Thank you to everyone who voted. The winners are revealed on the big screen.", true);
+      show("v-matric");
+      $("matric").focus();
+    });
+  }
+
+  // ---- 2. matric number ----
+  $("matric-form").addEventListener("submit", function (e) {
+    e.preventDefault();
+    var value = $("matric").value.trim();
+    setError($("matric-error"), "");
+    if (!value) return setError($("matric-error"), "Please enter your matric number.");
+    $("matric-btn").disabled = true;
+    $("matric-btn").textContent = "Checking…";
+    api("/check", { method: "POST", body: { matric_number: value }, onSlow: onSlow }).then(function (r) {
+      $("matric-btn").disabled = false;
+      $("matric-btn").textContent = "Continue";
+      $("slow").hidden = true;
+      if (r.ok && r.data.state === "ok") {
+        matric = value;
+        $("who").textContent = r.data.display_name;
+        return loadBallot();
+      }
+      if (r.data.state === "already_voted") return alreadyVoted();
+      if (r.data.state === "not_open") return start();
+      setError($("matric-error"), r.data.error || "Something went wrong. Please try again.");
+    });
+  });
+
+  $("change").addEventListener("click", function () {
+    matric = ""; choices = {}; $("matric").value = "";
+    show("v-matric"); $("matric").focus();
+  });
+
+  // ---- 3. the ballot ----
+  function loadBallot() {
+    show("v-loading");
+    return api("/ballot", { onSlow: onSlow }).then(function (r) {
+      if (!r.ok || r.data.status !== "open" || !r.data.categories.length) return start();
+      categories = r.data.categories.map(function (c) { return { id: c.id, name: c.name, nominees: shuffle(c.nominees) }; });
+      choices = {};
+      renderBallot();
+      setError($("ballot-error"), "");
+      show("v-ballot");
+    });
+  }
+
+  function renderBallot() {
+    var holder = $("categories");
+    holder.textContent = "";
+    categories.forEach(function (cat) {
+      var card = h("div", { class: "card", id: "cat-" + cat.id }, h("h2", null, cat.name));
+      cat.nominees.forEach(function (n) { card.appendChild(option(cat, n.id, n.name, false)); });
+      card.appendChild(option(cat, "", "Skip this category", true));
+      holder.appendChild(card);
+    });
+    updateProgress();
+  }
+
+  function option(cat, value, text, isSkip) {
+    var input = h("input", { type: "radio", name: "cat-" + cat.id, value: value });
+    var label = h("label", { class: "option" + (isSkip ? " skip" : "") }, input, h("span", { class: "dot" }), h("span", null, text));
+    input.addEventListener("change", function () {
+      choices[cat.id] = value;
+      Array.prototype.forEach.call($("cat-" + cat.id).querySelectorAll(".option"), function (l) {
+        l.classList.toggle("selected", l.querySelector("input").checked);
+      });
+      setError($("ballot-error"), "");
+      updateProgress();
+    });
+    return label;
+  }
+
+  function unanswered() { return categories.filter(function (c) { return choices[c.id] === undefined; }); }
+  function updateProgress() {
+    $("progress").textContent = (categories.length - unanswered().length) + " of " + categories.length + " answered";
+  }
+
+  // ---- 4. review, then submit ----
+  $("review-btn").addEventListener("click", function () {
+    var missing = unanswered();
+    if (missing.length) {
+      setError($("ballot-error"), "Please choose a nominee, or skip, in: " + missing.map(function (c) { return c.name; }).join(", ") + ".");
+      var first = $("cat-" + missing[0].id);
+      if (first.scrollIntoView) first.scrollIntoView({ behavior: "smooth", block: "center" });
+      return;
+    }
+    var list = $("review-list");
+    list.textContent = "";
+    categories.forEach(function (c) {
+      var picked = c.nominees.filter(function (n) { return n.id === choices[c.id]; })[0];
+      list.appendChild(h("li", null,
+        h("span", { class: "cat" }, c.name),
+        h("span", { class: "pick" + (picked ? "" : " none") }, picked ? picked.name : "Skipped")));
+    });
+    setError($("submit-error"), "");
+    show("v-review");
+  });
+
+  $("back-btn").addEventListener("click", function () { show("v-ballot"); });
+
+  $("submit-btn").addEventListener("click", function () {
+    var btn = $("submit-btn");
+    if (btn.disabled) return;                      // no double-taps
+    btn.disabled = true;
+    btn.textContent = "Submitting…";
+    setError($("submit-error"), "");
+    var selections = {};
+    categories.forEach(function (c) { selections[c.id] = choices[c.id] || null; });
+    api("/cast", { method: "POST", body: { matric_number: matric, selections: selections }, onSlow: onSlow }).then(function (r) {
+      if (r.ok) {
+        matric = ""; choices = {}; categories = [];
+        btn.disabled = false; btn.textContent = "Submit my vote";
+        return show("v-done");
+      }
+      btn.disabled = false;
+      btn.textContent = "Submit my vote";
+      $("slow").hidden = true;
+      if (r.data.state === "already_voted") return alreadyVoted();
+      if (r.data.state === "not_open") return start();
+      setError($("submit-error"), r.data.error || "Something went wrong. Please try again.");
+    });
+  });
+
+  start();
+})();
+</script>
+</body>
+</html>
