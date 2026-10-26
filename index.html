@@ -67,7 +67,7 @@
   <section id="v-done" class="card center" hidden aria-live="polite">
     <div class="tick">✓</div>
     <h2>Your vote is in</h2>
-    <p class="dim">Thank you for voting. The winners will be revealed on the big screen tonight.</p>
+    <p class="dim">Thank you for voting. The winners will be announced at the awards night.</p>
   </section>
 
   <p class="foot">CONNECT &nbsp;|&nbsp; GROW &nbsp;|&nbsp; EXCEL</p>
@@ -83,6 +83,31 @@
   var matric = "";
   var categories = [];   // [{ id, name, nominees: [{ id, name }] }]
   var choices = {};      // categoryId -> nomineeId, or "" for "skip"; undefined = not answered yet
+
+  // Draft answers are kept on this phone only, so a reload or a phone call
+  // doesn't wipe a 30-category ballot. They are removed once the vote is sent.
+  var restored = 0;
+  function draftKey() { return "gala_vote_draft_" + String(matric).replace(/\s+/g, "").toUpperCase(); }
+  function saveDraft() { try { localStorage.setItem(draftKey(), JSON.stringify(choices)); } catch (e) {} }
+  function clearDraft() { try { localStorage.removeItem(draftKey()); } catch (e) {} }
+  function loadDraft() {
+    var saved = {};
+    try { saved = JSON.parse(localStorage.getItem(draftKey()) || "{}") || {}; } catch (e) { saved = {}; }
+    restored = 0;
+    categories.forEach(function (c) {
+      var v = saved[c.id];
+      if (v === undefined) return;
+      var valid = v === "" || c.nominees.some(function (n) { return n.id === v; });
+      if (!valid) return;
+      choices[c.id] = v; restored++;
+      Array.prototype.forEach.call($("cat-" + c.id).querySelectorAll(".option"), function (l) {
+        var input = l.querySelector("input");
+        input.checked = input.value === v;
+        l.classList.toggle("selected", input.checked);
+      });
+    });
+    updateProgress();
+  }
 
   function show(id) {
     VIEWS.forEach(function (v) { $(v).hidden = v !== id; });
@@ -116,8 +141,8 @@
     show("v-loading");
     return api("/state", { onSlow: onSlow }).then(function (r) {
       if (!r.ok) return notice("We can't connect right now", r.data.error || "Please try again in a moment.");
-      if (r.data.status === "draft") return notice("Voting opens soon", "Check back when the awards night begins.");
-      if (r.data.status === "closed") return notice("Voting has closed", "Thank you to everyone who voted. The winners are revealed on the big screen.", true);
+      if (r.data.status === "draft") return notice("Voting opens soon", "Voting hasn’t started yet. Please check back soon.");
+      if (r.data.status === "closed") return notice("Voting has closed", "Thank you to everyone who voted. The winners will be announced at the awards night.", true);
       show("v-matric");
       $("matric").focus();
     });
@@ -159,6 +184,7 @@
       categories = r.data.categories.map(function (c) { return { id: c.id, name: c.name, nominees: shuffle(c.nominees) }; });
       choices = {};
       renderBallot();
+      loadDraft();
       setError($("ballot-error"), "");
       show("v-ballot");
     });
@@ -185,6 +211,7 @@
         l.classList.toggle("selected", l.querySelector("input").checked);
       });
       setError($("ballot-error"), "");
+      saveDraft();
       updateProgress();
     });
     return label;
@@ -192,7 +219,8 @@
 
   function unanswered() { return categories.filter(function (c) { return choices[c.id] === undefined; }); }
   function updateProgress() {
-    $("progress").textContent = (categories.length - unanswered().length) + " of " + categories.length + " answered";
+    $("progress").textContent = (categories.length - unanswered().length) + " of " + categories.length + " answered" +
+      (restored ? " (your earlier answers were restored)" : "");
   }
 
   // ---- 4. review, then submit ----
@@ -228,6 +256,7 @@
     categories.forEach(function (c) { selections[c.id] = choices[c.id] || null; });
     api("/cast", { method: "POST", body: { matric_number: matric, selections: selections }, onSlow: onSlow }).then(function (r) {
       if (r.ok) {
+        clearDraft();
         matric = ""; choices = {}; categories = [];
         btn.disabled = false; btn.textContent = "Submit my vote";
         return show("v-done");
@@ -235,7 +264,7 @@
       btn.disabled = false;
       btn.textContent = "Submit my vote";
       $("slow").hidden = true;
-      if (r.data.state === "already_voted") return alreadyVoted();
+      if (r.data.state === "already_voted") { clearDraft(); return alreadyVoted(); }
       if (r.data.state === "not_open") return start();
       setError($("submit-error"), r.data.error || "Something went wrong. Please try again.");
     });
