@@ -4,6 +4,20 @@
 (function () {
   var BASE = String(window.VOTING_API_BASE || "").replace(/\/+$/, "");
 
+  // A random id this browser keeps, sent with every request so organisers can
+  // see if one device is being used for many matric numbers. It is not a
+  // login and holds no personal data.
+  function deviceId() {
+    try {
+      var id = localStorage.getItem("gala_device_id");
+      if (!id) {
+        id = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : (Date.now().toString(36) + Math.random().toString(36).slice(2, 12));
+        localStorage.setItem("gala_device_id", id);
+      }
+      return id;
+    } catch (e) { return ""; }
+  }
+
   // api("/path", { method, body, adminKey, onSlow }) -> { ok, status, data }
   // Never throws. onSlow fires if the server takes >4s — on free hosting the
   // first request after a quiet spell can take about a minute to wake it.
@@ -11,6 +25,8 @@
     opts = opts || {};
     var headers = { "Content-Type": "application/json" };
     if (opts.adminKey) headers["x-voting-admin-key"] = opts.adminKey;
+    var dev = deviceId();
+    if (dev) headers["x-device-id"] = dev;
     var ctrl = new AbortController();
     var giveUp = setTimeout(function () { ctrl.abort(); }, 75000);
     var slow = opts.onSlow ? setTimeout(opts.onSlow, 4000) : null;
