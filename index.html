@@ -34,10 +34,24 @@
     <form id="matric-form" novalidate>
       <label class="field-label" for="matric">Your matric number</label>
       <input id="matric" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="Enter your matric number">
+      <label class="field-label" for="email" style="margin-top:14px">Your email address</label>
+      <input id="email" type="text" inputmode="email" autocomplete="email" autocapitalize="none" spellcheck="false" placeholder="The email address the Association has for you">
       <div id="matric-error" class="notice error" role="alert" hidden></div>
-      <button id="matric-btn" class="btn" type="submit" style="margin-top:14px">Continue</button>
+      <button id="matric-btn" class="btn" type="submit" style="margin-top:14px">Send me a code</button>
     </form>
-    <p class="fine">Each matric number can vote once, and votes are final.</p>
+    <p class="fine">We'll email you a 6-digit code to confirm it's you. Each matric number can vote once, and votes are final.</p>
+  </section>
+
+  <section id="v-code" class="card" hidden>
+    <form id="code-form" novalidate>
+      <label class="field-label" for="code">Enter the 6-digit code</label>
+      <p id="code-sent" class="fine"></p>
+      <input id="code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="7" spellcheck="false" placeholder="123456">
+      <div id="code-error" class="notice error" role="alert" hidden></div>
+      <button id="code-btn" class="btn" type="submit" style="margin-top:14px">Verify and continue</button>
+    </form>
+    <button id="resend" class="btn ghost" type="button" style="margin-top:10px" disabled>Send a new code</button>
+    <p class="fine"><button id="code-back" class="link" type="button">Use different details</button></p>
   </section>
 
   <section id="v-ballot" hidden>
@@ -78,9 +92,12 @@
 <script>
 (function () {
   var $ = function (id) { return document.getElementById(id); };
-  var VIEWS = ["v-loading", "v-notice", "v-matric", "v-ballot", "v-review", "v-done"];
+  var VIEWS = ["v-loading", "v-notice", "v-matric", "v-code", "v-ballot", "v-review", "v-done"];
 
   var matric = "";
+  var email = "";
+  var token = "";        // proves this person typed the code sent to their email
+  var triedSession = false;
   var categories = [];   // [{ id, name, nominees: [{ id, name }] }]
   var choices = {};      // categoryId -> nomineeId, or "" for "skip"; undefined = not answered yet
 
@@ -108,6 +125,22 @@
     });
     updateProgress();
   }
+
+  // The verified session is kept for this browser tab only, so a refresh or a
+  // dropped connection doesn't mean asking for another code.
+  var SESSION_KEY = "gala_vote_session";
+  function saveSession() {
+    try { sessionStorage.setItem(SESSION_KEY, JSON.stringify({ matric: matric, email: email, token: token, name: $("who").textContent, exp: Date.now() + 80 * 60 * 1000 })); } catch (e) {}
+  }
+  function clearSession() { try { sessionStorage.removeItem(SESSION_KEY); } catch (e) {} token = ""; }
+  function loadSession() {
+    try {
+      var x = JSON.parse(sessionStorage.getItem(SESSION_KEY) || "null");
+      if (x && x.token && x.matric && x.exp > Date.now()) return x;
+    } catch (e) {}
+    return null;
+  }
+  function maskEmail(e) { var p = e.split("@"); return p[0].charAt(0) + "***@" + (p[1] || ""); }
 
   function show(id) {
     VIEWS.forEach(function (v) { $(v).hidden = v !== id; });
@@ -143,36 +176,106 @@
       if (!r.ok) return notice("We can't connect right now", r.data.error || "Please try again in a moment.");
       if (r.data.status === "draft") return notice("Voting opens soon", "Voting hasn’t started yet. Please check back soon.");
       if (r.data.status === "closed") return notice("Voting has closed", "Thank you to everyone who voted. The winners will be announced at the awards night.", true);
+      if (!triedSession) {
+        triedSession = true;
+        var saved = loadSession();
+        if (saved) { matric = saved.matric; email = saved.email || ""; token = saved.token; $("who").textContent = saved.name; return loadBallot(); }
+      }
       show("v-matric");
       $("matric").focus();
     });
   }
 
-  // ---- 2. matric number ----
+  // ---- 2. matric number + email, then the code we email ----
+  var resendTimer = null;
+  function startResendTimer() {
+    var left = 60, btn = $("resend");
+    btn.disabled = true;
+    clearInterval(resendTimer);
+    function tick() {
+      if (left <= 0) { clearInterval(resendTimer); btn.disabled = false; btn.textContent = "Send a new code"; return; }
+      btn.textContent = "Send a new code (" + left + ")"; left--;
+    }
+    tick(); resendTimer = setInterval(tick, 1000);
+  }
+  function sentMessage() {
+    return "If your details match our records, we've emailed a 6-digit code to " + maskEmail(email) +
+      ". It works for 10 minutes. Check your spam folder too. If you've already voted, we'll email you to say so.";
+  }
+
   $("matric-form").addEventListener("submit", function (e) {
     e.preventDefault();
     var value = $("matric").value.trim();
+    var mail = $("email").value.trim();
     setError($("matric-error"), "");
     if (!value) return setError($("matric-error"), "Please enter your matric number.");
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(mail)) return setError($("matric-error"), "Please enter your email address.");
     $("matric-btn").disabled = true;
-    $("matric-btn").textContent = "Checking…";
-    api("/check", { method: "POST", body: { matric_number: value }, onSlow: onSlow }).then(function (r) {
+    $("matric-btn").textContent = "Sending…";
+    api("/request-code", { method: "POST", body: { matric_number: value, email: mail }, onSlow: onSlow }).then(function (r) {
       $("matric-btn").disabled = false;
-      $("matric-btn").textContent = "Continue";
+      $("matric-btn").textContent = "Send me a code";
       $("slow").hidden = true;
-      if (r.ok && r.data.state === "ok") {
-        matric = value;
-        $("who").textContent = r.data.display_name;
-        return loadBallot();
+      if (r.ok) {
+        matric = value; email = mail;
+        $("code-sent").textContent = sentMessage();
+        $("code").value = "";
+        setError($("code-error"), "");
+        show("v-code"); $("code").focus();
+        return startResendTimer();
       }
-      if (r.data.state === "already_voted") return alreadyVoted();
       if (r.data.state === "not_open") return start();
       setError($("matric-error"), r.data.error || "Something went wrong. Please try again.");
     });
   });
 
+  $("code-form").addEventListener("submit", function (e) {
+    e.preventDefault();
+    var code = $("code").value.replace(/\s+/g, "");
+    setError($("code-error"), "");
+    if (!/^\d{6}$/.test(code)) return setError($("code-error"), "Please enter the 6-digit code from your email.");
+    $("code-btn").disabled = true;
+    $("code-btn").textContent = "Checking…";
+    api("/verify-code", { method: "POST", body: { matric_number: matric, code: code }, onSlow: onSlow }).then(function (r) {
+      $("code-btn").disabled = false;
+      $("code-btn").textContent = "Verify and continue";
+      $("slow").hidden = true;
+      if (r.ok && r.data.state === "ok") {
+        token = r.data.token;
+        $("who").textContent = r.data.display_name;
+        saveSession();
+        return loadBallot();
+      }
+      if (r.data.state === "already_voted") return alreadyVoted();
+      if (r.data.state === "not_open") return start();
+      setError($("code-error"), r.data.error || "Something went wrong. Please try again.");
+    });
+  });
+
+  $("resend").addEventListener("click", function () {
+    $("resend").disabled = true;
+    setError($("code-error"), "");
+    api("/request-code", { method: "POST", body: { matric_number: matric, email: email }, onSlow: onSlow }).then(function (r) {
+      $("slow").hidden = true;
+      if (r.ok) { $("code-sent").textContent = "A new code is on its way. " + sentMessage(); return startResendTimer(); }
+      setError($("code-error"), r.data.error || "Could not send a new code. Please try again.");
+      startResendTimer();
+    });
+  });
+
+  function backToDetails(message) {
+    clearInterval(resendTimer);
+    show("v-matric");
+    $("matric").value = matric; $("email").value = email;
+    setError($("matric-error"), message || "");
+    $("matric").focus();
+  }
+  $("code-back").addEventListener("click", function () { backToDetails(); });
+
   $("change").addEventListener("click", function () {
-    matric = ""; choices = {}; $("matric").value = "";
+    clearSession();
+    matric = ""; email = ""; choices = {};
+    $("matric").value = ""; $("email").value = "";
     show("v-matric"); $("matric").focus();
   });
 
@@ -254,17 +357,18 @@
     setError($("submit-error"), "");
     var selections = {};
     categories.forEach(function (c) { selections[c.id] = choices[c.id] || null; });
-    api("/cast", { method: "POST", body: { matric_number: matric, selections: selections }, onSlow: onSlow }).then(function (r) {
+    api("/cast", { method: "POST", body: { matric_number: matric, token: token, selections: selections }, onSlow: onSlow }).then(function (r) {
       if (r.ok) {
-        clearDraft();
-        matric = ""; choices = {}; categories = [];
+        clearDraft(); clearSession();
+        matric = ""; email = ""; choices = {}; categories = [];
         btn.disabled = false; btn.textContent = "Submit my vote";
         return show("v-done");
       }
       btn.disabled = false;
       btn.textContent = "Submit my vote";
       $("slow").hidden = true;
-      if (r.data.state === "already_voted") { clearDraft(); return alreadyVoted(); }
+      if (r.data.state === "already_voted") { clearDraft(); clearSession(); return alreadyVoted(); }
+      if (r.data.state === "verify_again") { clearSession(); return backToDetails("Please verify your email again to vote. Your answers are saved."); }
       if (r.data.state === "not_open") return start();
       setError($("submit-error"), r.data.error || "Something went wrong. Please try again.");
     });
