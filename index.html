@@ -99,7 +99,7 @@
   var token = "";        // proves this person typed the code sent to their email
   var triedSession = false;
   var categories = [];   // [{ id, name, nominees: [{ id, name }] }]
-  var choices = {};      // categoryId -> nomineeId, or "" for "skip"; undefined = not answered yet
+  var choices = {};      // categoryId -> nomineeId; undefined = not answered yet
 
   // Draft answers are kept on this phone only, so a reload or a phone call
   // doesn't wipe a 30-category ballot. They are removed once the vote is sent.
@@ -114,7 +114,7 @@
     categories.forEach(function (c) {
       var v = saved[c.id];
       if (v === undefined) return;
-      var valid = v === "" || c.nominees.some(function (n) { return n.id === v; });
+      var valid = c.nominees.some(function (n) { return n.id === v; });
       if (!valid) return;
       choices[c.id] = v; restored++;
       Array.prototype.forEach.call($("cat-" + c.id).querySelectorAll(".option"), function (l) {
@@ -298,16 +298,15 @@
     holder.textContent = "";
     categories.forEach(function (cat) {
       var card = h("div", { class: "card", id: "cat-" + cat.id }, h("h2", null, cat.name));
-      cat.nominees.forEach(function (n) { card.appendChild(option(cat, n.id, n.name, false)); });
-      card.appendChild(option(cat, "", "Skip this category", true));
+      cat.nominees.forEach(function (n) { card.appendChild(option(cat, n.id, n.name)); });
       holder.appendChild(card);
     });
     updateProgress();
   }
 
-  function option(cat, value, text, isSkip) {
+  function option(cat, value, text) {
     var input = h("input", { type: "radio", name: "cat-" + cat.id, value: value });
-    var label = h("label", { class: "option" + (isSkip ? " skip" : "") }, input, h("span", { class: "dot" }), h("span", null, text));
+    var label = h("label", { class: "option" }, input, h("span", { class: "dot" }), h("span", null, text));
     input.addEventListener("change", function () {
       choices[cat.id] = value;
       Array.prototype.forEach.call($("cat-" + cat.id).querySelectorAll(".option"), function (l) {
@@ -322,15 +321,16 @@
 
   function unanswered() { return categories.filter(function (c) { return choices[c.id] === undefined; }); }
   function updateProgress() {
-    $("progress").textContent = (categories.length - unanswered().length) + " of " + categories.length + " answered" +
-      (restored ? " (your earlier answers were restored)" : "");
+    $("progress").textContent = (categories.length - unanswered().length) + " of " + categories.length + " answered. Every category needs an answer." +
+      (restored ? " (Your earlier answers were restored.)" : "");
   }
 
   // ---- 4. review, then submit ----
   $("review-btn").addEventListener("click", function () {
     var missing = unanswered();
     if (missing.length) {
-      setError($("ballot-error"), "Please choose a nominee, or skip, in: " + missing.map(function (c) { return c.name; }).join(", ") + ".");
+      var names = missing.slice(0, 4).map(function (c) { return c.name; }).join(", ");
+      setError($("ballot-error"), "Please choose a nominee in every category. " + missing.length + " still to answer, starting with: " + names + (missing.length > 4 ? "…" : "."));
       var first = $("cat-" + missing[0].id);
       if (first.scrollIntoView) first.scrollIntoView({ behavior: "smooth", block: "center" });
       return;
@@ -341,7 +341,7 @@
       var picked = c.nominees.filter(function (n) { return n.id === choices[c.id]; })[0];
       list.appendChild(h("li", null,
         h("span", { class: "cat" }, c.name),
-        h("span", { class: "pick" + (picked ? "" : " none") }, picked ? picked.name : "Skipped")));
+        h("span", { class: "pick" }, picked ? picked.name : "")));
     });
     setError($("submit-error"), "");
     show("v-review");
@@ -356,7 +356,7 @@
     btn.textContent = "Submitting…";
     setError($("submit-error"), "");
     var selections = {};
-    categories.forEach(function (c) { selections[c.id] = choices[c.id] || null; });
+    categories.forEach(function (c) { selections[c.id] = choices[c.id]; });
     api("/cast", { method: "POST", body: { matric_number: matric, token: token, selections: selections }, onSlow: onSlow }).then(function (r) {
       if (r.ok) {
         clearDraft(); clearSession();
